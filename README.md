@@ -8,6 +8,17 @@
 ![Scale](https://img.shields.io/badge/scale-5%2C000%20Census%20Tracts-teal)
 ![Target Venue](https://img.shields.io/badge/target-EMNLP%202026-darkgreen)
 
+## Live Demo
+
+Experience the full multi-model bias analysis dashboard:
+
+**[LinguisticRedline Dashboard](https://linguisticredline2-ve26kgbdv7ergrtiu8mwnm.streamlit.app/)**
+
+- Multi-model comparison (Llama, Mistral, Qwen, etc.)
+- Counterfactual bias analysis
+- Debiasing strategy evaluation
+- Ground truth calibration
+
 ## Table of Contents
 
 - [Overview](#overview)
