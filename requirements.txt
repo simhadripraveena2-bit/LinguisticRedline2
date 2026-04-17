@@ -1,26 +1,48 @@
-pandas
-numpy
+# ── Core data stack ─────────────────────────
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.11.0
+
+# ── ML / stats ──────────────────────────────
+scikit-learn>=1.4.0
+statsmodels>=0.14.0
+
+# ── NLP / models ────────────────────────────
+transformers>=4.40.0
+torch>=2.2.0
+huggingface_hub>=0.20.0
+
+# ── Visualization ───────────────────────────
+matplotlib>=3.8.0
+seaborn>=0.13.0
+wordcloud>=1.9.3
+altair==4.2.2
+
+# ── Geospatial (IMPORTANT: can break builds) ─
+osmnx>=1.9.3
+geopandas>=0.14.0
+shapely>=2.0.0
+
+# ── utilities ───────────────────────────────
 requests>=2.31.0
-osmnx
-geopandas
-shapely
-tqdm
-pyyaml
-scipy
-scikit-learn>=1.4
-transformers
-torch
-matplotlib
-seaborn
-wordcloud
-streamlit==1.28.0
-pydeck
+tqdm>=4.66.0
+pyyaml>=6.0.1
+
+# ── dashboards ──────────────────────────────
+streamlit>=1.31.0
+pydeck>=0.8.0
+
+# ── LLM APIs ────────────────────────────────
 groq>=0.4.0
 google-generativeai>=0.8.0
 openai>=1.0.0
-huggingface_hub>=0.20.0
-statsmodels
-bertopic
-shap
-vaderSentiment
-altair==4.2.2
+
+# ── NLP / analysis extras ────────────────────
+bertopic>=0.16.0
+shap>=0.45.0
+vaderSentiment>=3.3.2
+
+# ── IMPORTANT FIX (avoid install crash) ──────
+setuptools
+wheel
+pip
