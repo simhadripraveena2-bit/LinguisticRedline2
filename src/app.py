@@ -1,4 +1,4 @@
-"""Streamlit dashboard for LinguisticRedline."""
+"""Streamlit dashboard for LinguisticRedline (robust version)."""
 
 from __future__ import annotations
 
@@ -15,38 +15,74 @@ COUNTERFACTUAL = Path("outputs/counterfactual_results.csv")
 GROUND_TRUTH = Path("outputs/ground_truth_comparison.csv")
 DEBIASING = Path("outputs/debiasing_results.csv")
 
-PROVIDER_COLORS = {
-    "groq": "#16a34a",
-    "gemini": "#2563eb",
-    "github": "#6b7280",
-    "openrouter": "#7c3aed",
-    "huggingface": "#ca8a04",
-}
+
+# ---------------- SAFE CSV LOADER ----------------
+
+def safe_read_csv(path: Path) -> pd.DataFrame:
+    """Robust CSV reader for broken / cloud CSVs."""
+    try:
+        return pd.read_csv(path, on_bad_lines="skip")
+    except Exception:
+        return pd.read_csv(path, engine="python", on_bad_lines="skip")
 
 
-# ---------------- SAFE LOADING ----------------
+# ---------------- SCHEMA NORMALIZATION ----------------
 
-@st.cache_data
-def load_base() -> pd.DataFrame:
-    if not BASE_DESC.exists() or not BASE_RESP.exists():
-        return pd.DataFrame()
+def normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Fix inconsistent column names across datasets."""
+    rename_map = {
+        "race": "dominant_race",
+        "Race": "dominant_race",
+        "ethnicity": "dominant_race",
+        "score": "crime_risk_score",
+        "risk_score": "crime_risk_score",
+        "tract": "id",
+    }
 
-    desc = pd.read_csv(BASE_DESC)
-    resp = pd.read_csv(BASE_RESP)
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
-    # merge safely
-    df = desc.merge(resp, left_on="id", right_on="tract_id", how="inner")
+    # ensure required columns exist (avoid KeyError)
+    if "dominant_race" not in df.columns:
+        df["dominant_race"] = "unknown"
 
-    # normalize columns (VERY IMPORTANT)
     if "crime_risk_score" not in df.columns and "numeric_score" in df.columns:
         df["crime_risk_score"] = df["numeric_score"]
 
     return df
 
 
+# ---------------- LOAD BASE DATA ----------------
+
+@st.cache_data
+def load_base() -> pd.DataFrame:
+    if not BASE_DESC.exists() or not BASE_RESP.exists():
+        return pd.DataFrame()
+
+    desc = safe_read_csv(BASE_DESC)
+    resp = safe_read_csv(BASE_RESP)
+
+    desc = normalize_schema(desc)
+    resp = normalize_schema(resp)
+
+    if "tract_id" not in resp.columns:
+        return pd.DataFrame()
+
+    df = desc.merge(resp, left_on="id", right_on="tract_id", how="inner")
+    df = normalize_schema(df)
+
+    return df
+
+
+# ---------------- MULTI MODEL LOADER ----------------
+
 @st.cache_data
 def load_multi_model_data() -> pd.DataFrame:
-    desc = pd.read_csv(BASE_DESC)
+    if not BASE_DESC.exists():
+        return pd.DataFrame()
+
+    desc = safe_read_csv(BASE_DESC)
+    desc = normalize_schema(desc)
+
     parts = []
 
     for file in Path("data").glob("llm_responses_*.csv"):
@@ -54,16 +90,14 @@ def load_multi_model_data() -> pd.DataFrame:
             continue
 
         try:
-            model_df = pd.read_csv(file)
+            resp = safe_read_csv(file)
+            resp = normalize_schema(resp)
 
-            if "tract_id" not in model_df.columns:
+            if "tract_id" not in resp.columns:
                 continue
 
-            joined = desc.merge(model_df, left_on="id", right_on="tract_id", how="inner")
-
-            # standardize
-            if "crime_risk_score" not in joined.columns and "numeric_score" in joined.columns:
-                joined["crime_risk_score"] = joined["numeric_score"]
+            joined = desc.merge(resp, left_on="id", right_on="tract_id", how="inner")
+            joined = normalize_schema(joined)
 
             parts.append(joined)
 
@@ -76,64 +110,64 @@ def load_multi_model_data() -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
-# ---------------- SAFE UI ----------------
+# ---------------- SAFE BADGES ----------------
 
-def render_model_badges(df: pd.DataFrame) -> None:
+def render_model_badges(df: pd.DataFrame):
     if df.empty or "model_display_name" not in df.columns:
-        st.warning("No model data available.")
+        st.warning("No model metadata available.")
         return
 
     models = df[["model_display_name", "provider"]].drop_duplicates()
 
-    chips = []
-    for _, row in models.iterrows():
-        color = PROVIDER_COLORS.get(str(row.get("provider", "unknown")).lower(), "#334155")
+    html = ""
+    for _, r in models.iterrows():
+        html += f"""
+        <span style="
+            background:#334155;
+            color:white;
+            padding:6px 10px;
+            border-radius:999px;
+            margin:3px;
+            display:inline-block;">
+            {r.get('model_display_name','?')} · {r.get('provider','?')}
+        </span>
+        """
 
-        chips.append(
-            f"<span style='background:{color};color:white;padding:6px 10px;"
-            f"border-radius:999px;margin:3px;display:inline-block;'>"
-            f"{row['model_display_name']} · {row.get('provider','?')}</span>"
-        )
-
-    st.markdown(" ".join(chips), unsafe_allow_html=True)
+    st.markdown(html, unsafe_allow_html=True)
 
 
-# ---------------- TABS ----------------
+# ---------------- TAB 1 ----------------
 
 def tab_multi_model():
     df = load_multi_model_data()
 
     if df.empty:
-        st.error("No multi-model data found. Run query_llm.py first.")
+        st.error("No multi-model data found. Run pipeline first.")
         return
+
+    df = normalize_schema(df)
 
     st.subheader("Multi-model comparison")
     render_model_badges(df)
 
-    required = {"model_display_name", "crime_risk_score", "dominant_race"}
-
-    if not required.issubset(df.columns):
-        st.error(f"Missing columns: {required - set(df.columns)}")
+    if "crime_risk_score" not in df.columns:
+        st.error("Missing crime_risk_score column.")
         return
 
-    summary = (
-        df.groupby(["model_display_name", "provider"], as_index=False)
-        .agg(
-            mean_score=("crime_risk_score", "mean"),
-            rows=("tract_id", "count"),
-        )
-    )
+    summary = df.groupby("model_display_name").agg(
+        mean_score=("crime_risk_score", "mean"),
+        rows=("id", "count")
+    ).reset_index()
 
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary)
 
     plot_df = df.dropna(subset=["crime_risk_score", "dominant_race"])
 
     if plot_df.empty:
-        st.warning("No valid data for plotting.")
+        st.warning("No valid data for plot.")
         return
 
     fig, ax = plt.subplots(figsize=(12, 5))
-
     sns.boxplot(
         data=plot_df,
         x="model_display_name",
@@ -141,20 +175,22 @@ def tab_multi_model():
         hue="dominant_race",
         ax=ax
     )
-
     ax.tick_params(axis="x", rotation=25)
     st.pyplot(fig)
 
+
+# ---------------- TAB 2 ----------------
 
 def tab_counterfactual():
     if not COUNTERFACTUAL.exists():
         st.info("Run counterfactual pipeline first.")
         return
 
-    df = pd.read_csv(COUNTERFACTUAL)
+    df = safe_read_csv(COUNTERFACTUAL)
+    df = normalize_schema(df)
 
     if df.empty:
-        st.warning("No counterfactual data.")
+        st.warning("Empty counterfactual file.")
         return
 
     fig, ax = plt.subplots()
@@ -168,12 +204,18 @@ def tab_counterfactual():
     st.pyplot(fig)
 
 
+# ---------------- TAB 3 ----------------
+
 def tab_ground_truth():
     if not GROUND_TRUTH.exists():
         st.info("Run ground truth pipeline first.")
         return
 
-    df = pd.read_csv(GROUND_TRUTH)
+    df = safe_read_csv(GROUND_TRUTH)
+    df = normalize_schema(df)
+
+    if df.empty:
+        return
 
     fig, ax = plt.subplots()
     sns.scatterplot(
@@ -186,15 +228,16 @@ def tab_ground_truth():
     st.pyplot(fig)
 
 
+# ---------------- TAB 4 ----------------
+
 def tab_debiasing():
     if not DEBIASING.exists():
         st.info("Run debiasing pipeline first.")
         return
 
-    df = pd.read_csv(DEBIASING)
+    df = safe_read_csv(DEBIASING)
 
     if df.empty:
-        st.warning("No debiasing data.")
         return
 
     plot_df = df.melt(
@@ -221,15 +264,16 @@ def main():
 
     base = load_base()
 
+    st.subheader("Overview")
+
     if base.empty:
-        st.warning("Base data missing or broken merge.")
+        st.warning("Base dataset missing or broken merge.")
     else:
         cols = [c for c in [
             "id", "city", "dominant_race", "income_bucket",
             "crime_risk_score", "model_display_name", "provider"
         ] if c in base.columns]
 
-        st.subheader("Overview")
         st.dataframe(base[cols].head(20))
 
     t1, t2, t3, t4 = st.tabs([
