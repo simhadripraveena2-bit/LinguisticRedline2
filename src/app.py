@@ -10,7 +10,7 @@ import seaborn as sns
 import streamlit as st
 
 BASE_DESC = Path("data/neighborhood_descriptions.csv")
-BASE_RESP = Path("data/llm_responses.csv")
+BASE_RESP = Path("data/llm_responses_all.csv")
 COUNTERFACTUAL = Path("outputs/counterfactual_results.csv")
 GROUND_TRUTH = Path("outputs/ground_truth_comparison.csv")
 DEBIASING = Path("outputs/debiasing_results.csv")
