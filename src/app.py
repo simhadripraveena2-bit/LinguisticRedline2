@@ -45,32 +45,43 @@ ORIGIN_COLORS = {
 
 @st.cache_data
 def load_base() -> pd.DataFrame:
-    """Load merged tract descriptions + all LLM responses."""
     if not BASE_DESC.exists():
         st.error("Missing data/neighborhood_descriptions.csv")
         return pd.DataFrame()
+
     if not BASE_RESP.exists():
         st.error("Missing data/llm_responses_all.csv — run query_llm.py first.")
         return pd.DataFrame()
 
     desc = pd.read_csv(BASE_DESC)
     resp = pd.read_csv(BASE_RESP)
+
     if "success" in resp.columns:
         resp = resp[resp["success"] == True]
 
     df = desc.merge(resp, left_on="id", right_on="tract_id", how="inner")
 
-    # Fix column collision
+    # Fix column collisions
     if "dominant_race_x" in df.columns:
         df = df.rename(columns={"dominant_race_x": "dominant_race"})
         df = df.drop(columns=["dominant_race_y"], errors="ignore")
+
     for col in ["city", "income_bucket"]:
         if f"{col}_x" in df.columns:
             df = df.rename(columns={f"{col}_x": col})
             df = df.drop(columns=[f"{col}_y"], errors="ignore")
 
-    df.setdefault("model_display_name", "unknown")
-    df.setdefault("provider", "unknown")
+    # Safe defaults
+    df["model_display_name"] = df.get("model_display_name", "unknown")
+    df["provider"] = df.get("provider", "unknown")
+
+    # Required column check
+    required_cols = ["dominant_race", "crime_risk_score"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        st.error(f"Missing columns: {missing}")
+        return pd.DataFrame()
+
     return df
 
 
