@@ -54,26 +54,39 @@ def load_base() -> pd.DataFrame:
 
 @st.cache_data
 def load_multi_model_data() -> pd.DataFrame:
-    """Load and combine all per-model response files in the data directory."""
+    """Robust loader for multi-model data (prevents empty crashes)."""
+
     desc = pd.read_csv(BASE_DESC)
-    parts: list[pd.DataFrame] = []
 
-    for file in sorted(Path("data").glob("llm_responses_*.csv")):
-        if file.name == "llm_responses_all.csv":
-            continue
+    file = BASE_RESP  # force single source (ALL FILE)
 
-        model_df = pd.read_csv(file)
+    if not file.exists():
+        return pd.DataFrame()
 
-        joined = desc[["id", "dominant_race", "city", "income_bucket"]].merge(
-            model_df,
-            left_on="id",
-            right_on="tract_id",
-            how="inner",
-        )
+    model_df = pd.read_csv(file)
 
-        parts.append(joined)
+    df = desc.merge(model_df, left_on="id", right_on="tract_id", how="inner")
 
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    # ---- SAFE GUARANTEES ----
+    if df.empty:
+        return df
+
+    if "model_display_name" not in df.columns:
+        df["model_display_name"] = "unknown"
+
+    if "provider" not in df.columns:
+        df["provider"] = "unknown"
+
+    # IMPORTANT: avoid seaborn crash
+    required = ["model_display_name", "crime_risk_score", "dominant_race"]
+
+    for col in required:
+        if col not in df.columns:
+            df[col] = None
+
+    df = df.dropna(subset=["crime_risk_score"])
+
+    return df
 
 
 def render_model_badges(model_df: pd.DataFrame) -> None:
@@ -119,8 +132,12 @@ def tab_multi_model() -> None:
     st.dataframe(summary, use_container_width=True)
 
     fig, ax = plt.subplots(figsize=(13, 6))
+    if all_models.empty or "crime_risk_score" not in all_models.columns:
+        st.warning("No valid multi-model data found.")
+        return
+
     sns.boxplot(
-        data=all_models,
+        data=all_models.dropna(subset=["crime_risk_score"]),
         x="model_display_name",
         y="crime_risk_score",
         hue="dominant_race",
