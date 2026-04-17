@@ -91,20 +91,15 @@ def load_csv(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     try:
-        return pd.read_csv(path)
-    
-    except Exception as e:
-        st.warning(f"Standard read failed for {path.name}, trying fallback...")
-
-        try:
-            return pd.read_csv(
-                path,
-                engine="python",      # more tolerant parser
-                on_bad_lines="skip",  # skip broken rows
-            )
-        except Exception as e2:
-            st.error(f"Failed to read {path.name}: {e2}")
-            return pd.DataFrame()
+        df = pd.read_csv(path)
+        return df
+    except pd.errors.ParserError:
+        st.warning(f" CSV corrupted, using fallback: {path.name}")
+        return pd.read_csv(
+            path,
+            engine="python",
+            on_bad_lines="skip"
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
