@@ -1,11 +1,10 @@
-"""Streamlit dashboard for LinguisticRedline free multi-model analyses."""
+"""Streamlit dashboard for LinguisticRedline."""
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
 
@@ -25,224 +24,220 @@ PROVIDER_COLORS = {
 }
 
 
+# ---------------- SAFE LOADING ----------------
+
 @st.cache_data
 def load_base() -> pd.DataFrame:
-    """Load merged dataset safely (multi-model)."""
-
-    if not BASE_DESC.exists():
-        st.error("Missing data/neighborhood_descriptions.csv")
-        return pd.DataFrame()
-
-    if not BASE_RESP.exists():
-        st.error("Missing data/llm_responses_all.csv — run query_llm.py --all-models")
+    if not BASE_DESC.exists() or not BASE_RESP.exists():
         return pd.DataFrame()
 
     desc = pd.read_csv(BASE_DESC)
     resp = pd.read_csv(BASE_RESP)
 
+    # merge safely
     df = desc.merge(resp, left_on="id", right_on="tract_id", how="inner")
 
-    # ── SAFE FALLBACKS (IMPORTANT FIX) ─────────────────────────────
-    if "model_display_name" not in df.columns:
-        df["model_display_name"] = "unknown"
-
-    if "provider" not in df.columns:
-        df["provider"] = "unknown"
+    # normalize columns (VERY IMPORTANT)
+    if "crime_risk_score" not in df.columns and "numeric_score" in df.columns:
+        df["crime_risk_score"] = df["numeric_score"]
 
     return df
 
 
 @st.cache_data
 def load_multi_model_data() -> pd.DataFrame:
-    """Robust loader for multi-model data (prevents empty crashes)."""
-
     desc = pd.read_csv(BASE_DESC)
+    parts = []
 
-    file = BASE_RESP  # force single source (ALL FILE)
+    for file in Path("data").glob("llm_responses_*.csv"):
+        if "all" in file.name:
+            continue
 
-    if not file.exists():
+        try:
+            model_df = pd.read_csv(file)
+
+            if "tract_id" not in model_df.columns:
+                continue
+
+            joined = desc.merge(model_df, left_on="id", right_on="tract_id", how="inner")
+
+            # standardize
+            if "crime_risk_score" not in joined.columns and "numeric_score" in joined.columns:
+                joined["crime_risk_score"] = joined["numeric_score"]
+
+            parts.append(joined)
+
+        except Exception:
+            continue
+
+    if not parts:
         return pd.DataFrame()
 
-    model_df = pd.read_csv(file)
-
-    df = desc.merge(model_df, left_on="id", right_on="tract_id", how="inner")
-
-    # ---- SAFE GUARANTEES ----
-    if df.empty:
-        return df
-
-    if "model_display_name" not in df.columns:
-        df["model_display_name"] = "unknown"
-
-    if "provider" not in df.columns:
-        df["provider"] = "unknown"
-
-    # IMPORTANT: avoid seaborn crash
-    required = ["model_display_name", "crime_risk_score", "dominant_race"]
-
-    for col in required:
-        if col not in df.columns:
-            df[col] = None
-
-    df = df.dropna(subset=["crime_risk_score"])
-
-    return df
+    return pd.concat(parts, ignore_index=True)
 
 
-def render_model_badges(model_df: pd.DataFrame) -> None:
-    """Render provider-colored model badges."""
-    models = (
-        model_df[["model_display_name", "provider"]]
-        .drop_duplicates()
-        .sort_values(["provider", "model_display_name"])
-    )
+# ---------------- SAFE UI ----------------
 
-    chips = []
-    for row in models.itertuples(index=False):
-        color = PROVIDER_COLORS.get(str(row.provider).lower(), "#334155")
-        chips.append(
-            f'<span style="background:{color};color:white;padding:0.35rem 0.6rem;'
-            f'border-radius:999px;margin:0.2rem;display:inline-block;">'
-            f'{row.model_display_name} · {str(row.provider).title()} · FREE</span>'
-        )
-
-    st.markdown("".join(chips), unsafe_allow_html=True)
-
-
-def tab_multi_model() -> None:
-    all_models = load_multi_model_data()
-
-    if all_models.empty:
-        st.info("Run `python src/query_llm.py --all-models` first.")
+def render_model_badges(df: pd.DataFrame) -> None:
+    if df.empty or "model_display_name" not in df.columns:
+        st.warning("No model data available.")
         return
 
-    st.markdown("#### Free multi-model roster")
-    render_model_badges(all_models)
+    models = df[["model_display_name", "provider"]].drop_duplicates()
+
+    chips = []
+    for _, row in models.iterrows():
+        color = PROVIDER_COLORS.get(str(row.get("provider", "unknown")).lower(), "#334155")
+
+        chips.append(
+            f"<span style='background:{color};color:white;padding:6px 10px;"
+            f"border-radius:999px;margin:3px;display:inline-block;'>"
+            f"{row['model_display_name']} · {row.get('provider','?')}</span>"
+        )
+
+    st.markdown(" ".join(chips), unsafe_allow_html=True)
+
+
+# ---------------- TABS ----------------
+
+def tab_multi_model():
+    df = load_multi_model_data()
+
+    if df.empty:
+        st.error("No multi-model data found. Run query_llm.py first.")
+        return
+
+    st.subheader("Multi-model comparison")
+    render_model_badges(df)
+
+    required = {"model_display_name", "crime_risk_score", "dominant_race"}
+
+    if not required.issubset(df.columns):
+        st.error(f"Missing columns: {required - set(df.columns)}")
+        return
 
     summary = (
-        all_models.groupby(["model_display_name", "provider"], as_index=False)
+        df.groupby(["model_display_name", "provider"], as_index=False)
         .agg(
             mean_score=("crime_risk_score", "mean"),
             rows=("tract_id", "count"),
-            failures=("success", lambda x: int((~x).sum())),
         )
-        .sort_values(["provider", "model_display_name"])
     )
 
     st.dataframe(summary, use_container_width=True)
 
-    fig, ax = plt.subplots(figsize=(13, 6))
-    if all_models.empty or "crime_risk_score" not in all_models.columns:
-        st.warning("No valid multi-model data found.")
+    plot_df = df.dropna(subset=["crime_risk_score", "dominant_race"])
+
+    if plot_df.empty:
+        st.warning("No valid data for plotting.")
         return
 
+    fig, ax = plt.subplots(figsize=(12, 5))
+
     sns.boxplot(
-        data=all_models.dropna(subset=["crime_risk_score"]),
+        data=plot_df,
         x="model_display_name",
         y="crime_risk_score",
         hue="dominant_race",
-        ax=ax,
+        ax=ax
     )
-    ax.tick_params(axis="x", rotation=20)
-    ax.set_xlabel("Model")
-    ax.set_ylabel("Crime risk score")
+
+    ax.tick_params(axis="x", rotation=25)
     st.pyplot(fig)
 
 
-def tab_counterfactual() -> None:
+def tab_counterfactual():
     if not COUNTERFACTUAL.exists():
-        st.info("Run `python src/counterfactual.py` first.")
+        st.info("Run counterfactual pipeline first.")
         return
 
     df = pd.read_csv(COUNTERFACTUAL)
 
-    fig, ax = plt.subplots(figsize=(7, 6))
+    if df.empty:
+        st.warning("No counterfactual data.")
+        return
+
+    fig, ax = plt.subplots()
     sns.scatterplot(
         data=df,
         x="original_score",
         y="counterfactual_score",
         hue="original_race",
-        alpha=0.6,
-        ax=ax,
+        ax=ax
     )
-    ax.plot([1, 10], [1, 10], linestyle="--", color="black")
     st.pyplot(fig)
 
 
-def tab_ground_truth() -> None:
+def tab_ground_truth():
     if not GROUND_TRUTH.exists():
-        st.info("Run `python src/ground_truth.py` first.")
+        st.info("Run ground truth pipeline first.")
         return
 
     df = pd.read_csv(GROUND_TRUTH)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots()
     sns.scatterplot(
         data=df,
         x="actual_crime_rate",
         y="crime_risk_score",
         hue="dominant_race",
-        alpha=0.5,
-        ax=ax,
+        ax=ax
     )
     st.pyplot(fig)
 
 
-def tab_debiasing() -> None:
+def tab_debiasing():
     if not DEBIASING.exists():
-        st.info("Run `python src/debiasing.py` first.")
+        st.info("Run debiasing pipeline first.")
         return
 
     df = pd.read_csv(DEBIASING)
+
+    if df.empty:
+        st.warning("No debiasing data.")
+        return
 
     plot_df = df.melt(
         id_vars=["strategy"],
         value_vars=[
             "demographic_parity_gap_abs_mean",
-            "disparate_impact_ratio_mean",
+            "disparate_impact_ratio_mean"
         ],
+        var_name="metric",
+        value_name="value"
     )
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    sns.barplot(data=plot_df, x="strategy", y="value", hue="variable", ax=ax)
+    sns.barplot(data=plot_df, x="strategy", y="value", hue="metric", ax=ax)
     ax.tick_params(axis="x", rotation=20)
     st.pyplot(fig)
 
 
-def main() -> None:
-    st.set_page_config(page_title="LinguisticRedline Dashboard", layout="wide")
-    st.title("LinguisticRedline: Zero-Cost Multi-Provider Dashboard")
+# ---------------- MAIN ----------------
+
+def main():
+    st.set_page_config(page_title="LinguisticRedline", layout="wide")
+    st.title("LinguisticRedline Dashboard")
 
     base = load_base()
 
     if base.empty:
-        st.stop()
+        st.warning("Base data missing or broken merge.")
+    else:
+        cols = [c for c in [
+            "id", "city", "dominant_race", "income_bucket",
+            "crime_risk_score", "model_display_name", "provider"
+        ] if c in base.columns]
 
-    st.subheader("Overview")
+        st.subheader("Overview")
+        st.dataframe(base[cols].head(20))
 
-    # SAFE COLUMN DISPLAY
-    cols = [
-        "id",
-        "city",
-        "dominant_race",
-        "income_bucket",
-        "crime_risk_score",
-        "model_display_name",
-        "provider",
-    ]
-
-    available_cols = [c for c in cols if c in base.columns]
-
-    st.write(base[available_cols].head(20))
-
-    t1, t2, t3, t4 = st.tabs(
-        [
-            "Multi-Model Comparison",
-            "Counterfactual Analysis",
-            "Ground Truth Calibration",
-            "Debiasing Results",
-        ]
-    )
+    t1, t2, t3, t4 = st.tabs([
+        "Multi-Model",
+        "Counterfactual",
+        "Ground Truth",
+        "Debiasing"
+    ])
 
     with t1:
         tab_multi_model()
