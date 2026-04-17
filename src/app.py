@@ -87,10 +87,24 @@ def load_base() -> pd.DataFrame:
 
 @st.cache_data
 def load_csv(path: Path) -> pd.DataFrame:
-    """Load a CSV if it exists, return empty DataFrame otherwise."""
-    if path.exists():
+    if not path.exists():
+        return pd.DataFrame()
+
+    try:
         return pd.read_csv(path)
-    return pd.DataFrame()
+    
+    except Exception as e:
+        st.warning(f"Standard read failed for {path.name}, trying fallback...")
+
+        try:
+            return pd.read_csv(
+                path,
+                engine="python",      # more tolerant parser
+                on_bad_lines="skip",  # skip broken rows
+            )
+        except Exception as e2:
+            st.error(f"Failed to read {path.name}: {e2}")
+            return pd.DataFrame()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
